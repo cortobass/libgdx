@@ -16,12 +16,12 @@
 
 package com.badlogic.gdx.input;
 
+import java.util.LinkedHashMap;
+
 import com.badlogic.gdx.Gdx;
-import com.badlogic.gdx.Input;
 import com.badlogic.gdx.InputAdapter;
 import com.badlogic.gdx.InputProcessor;
 import com.badlogic.gdx.math.Vector2;
-import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.utils.TimeUtils;
 import com.badlogic.gdx.utils.Timer;
 import com.badlogic.gdx.utils.Timer.Task;
@@ -42,21 +42,36 @@ public class GestureDetector extends InputAdapter {
 	private float lastTapX, lastTapY;
 	private int lastTapButton, lastTapPointer;
 	boolean longPressFired;
-	private boolean pinching;
 	private boolean panning;
 
-	private final VelocityTracker tracker = new VelocityTracker();
 	private float tapSquareCenterX, tapSquareCenterY;
 	private long gestureStartTime;
-	Vector2 pointer1 = new Vector2();
-	private final Vector2 pointer2 = new Vector2();
-	private final Vector2 initialPointer1 = new Vector2();
-	private final Vector2 initialPointer2 = new Vector2();
+
+	final static byte NOT_USED = 0; 
+	final static byte PAN_FLING = 1; 
+	final static byte PINCH_ZOOM = 2; 
+	private class ptr {
+		byte usedFor;
+		Vector2 initialPosition, lastPosition;
+		VelocityTracker tracker;
+		ptr(long startTime, byte usedFor, float x, float y) {
+			this.usedFor = usedFor;
+			initialPosition = new Vector2(x, y);
+			lastPosition = new Vector2(x, y);
+			tracker = new VelocityTracker();
+			tracker.start(x, y, startTime);
+		}
+	}
+	private LinkedHashMap<Integer, ptr> pointers = new LinkedHashMap<Integer, ptr>();
+	private ptr pinch1, pinch2;
 
 	private final Task longPressTask = new Task() {
 		@Override
 		public void run () {
-			if (!longPressFired) longPressFired = listener.longPress(pointer1.x, pointer1.y);
+			if (!longPressFired) {
+				ptr firstPtr = pointers.values().iterator().next();
+				longPressFired = listener.longPress(firstPtr.lastPosition.x, firstPtr.lastPosition.y);
+			}
 		}
 	};
 
@@ -75,7 +90,7 @@ public class GestureDetector extends InputAdapter {
 	 *           {@link GestureListener#fling(float, float, int)}
 	 * @param listener May be null if the listener will be set later. */
 	public GestureDetector (float halfTapSquareSize, float tapCountInterval, float longPressDuration, float maxFlingDelay,
-		GestureListener listener) {
+			GestureListener listener) {
 		this.tapSquareSize = halfTapSquareSize;
 		this.tapCountInterval = (long)(tapCountInterval * 1000000000l);
 		this.longPressSeconds = longPressDuration;
@@ -89,36 +104,34 @@ public class GestureDetector extends InputAdapter {
 	}
 
 	public boolean touchDown (float x, float y, int pointer, int button) {
-		if (pointer > 1) return false;
+		long startTime = Gdx.input.getCurrentEventTime();
+		if (pointers.size() == 0) {
+			// One pointer -> pan, fling, longpress
+			pointers.put(pointer, new ptr(startTime, PAN_FLING, x, y));
 
-		if (pointer == 0) {
-			pointer1.set(x, y);
-			gestureStartTime = Gdx.input.getCurrentEventTime();
-			tracker.start(x, y, gestureStartTime);
-			if (Gdx.input.isTouched(1)) {
-				// Start pinch.
-				inTapSquare = false;
-				pinching = true;
-				initialPointer1.set(pointer1);
-				initialPointer2.set(pointer2);
-				longPressTask.cancel();
-			} else {
-				// Normal touch down.
-				inTapSquare = true;
-				pinching = false;
-				longPressFired = false;
-				tapSquareCenterX = x;
-				tapSquareCenterY = y;
-				if (!longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
-			}
-		} else {
-			// Start pinch.
-			pointer2.set(x, y);
+			pinch1 = null;
+			pinch2 = null;
+			gestureStartTime = startTime;
+			panning = false;
+			inTapSquare = true;
+			tapSquareCenterX = x;
+			tapSquareCenterY = y;
+			longPressFired = false;
+			if (!longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
+		} else if (pointers.size() == 1) {
+			// Two pointers -> pinch, zoom
+			pinch1 = pointers.values().iterator().next();
+			pinch1.initialPosition = pinch1.lastPosition.cpy();
+			pinch1.usedFor = PINCH_ZOOM;
+			pinch2 = new ptr(startTime, PINCH_ZOOM, x, y);
+			pointers.put(pointer, pinch2);
+
+			gestureStartTime = 0;
 			inTapSquare = false;
-			pinching = true;
-			initialPointer1.set(pointer1);
-			initialPointer2.set(pointer2);
 			longPressTask.cancel();
+		} else {
+			// Three pointers or more -> new pointer unused, waiting
+			pointers.put(pointer, new ptr(startTime, NOT_USED, x, y));
 		}
 		return listener.touchDown(x, y, pointer, button);
 	}
@@ -129,39 +142,90 @@ public class GestureDetector extends InputAdapter {
 	}
 
 	public boolean touchDragged (float x, float y, int pointer) {
-		if (pointer > 1) return false;
 		if (longPressFired) return false;
 
-		if (pointer == 0)
-			pointer1.set(x, y);
-		else
-			pointer2.set(x, y);
+		if (!pointers.containsKey(pointer)) return false;
+		ptr currentPtr = pointers.get(pointer); 
+		currentPtr.lastPosition.set(x, y);
 
 		// handle pinch zoom
-		if (pinching) {
+		if (currentPtr.usedFor == PINCH_ZOOM) {
 			if (listener != null) {
-				boolean result = listener.pinch(initialPointer1, initialPointer2, pointer1, pointer2);
-				return listener.zoom(initialPointer1.dst(initialPointer2), pointer1.dst(pointer2)) || result;
+				boolean result = listener.pinch(pinch1.initialPosition, pinch2.initialPosition, pinch1.lastPosition, pinch2.lastPosition);
+				return listener.zoom(pinch1.initialPosition.dst(pinch2.initialPosition), pinch1.lastPosition.dst(pinch2.lastPosition)) || result;
 			}
 			return false;
 		}
 
 		// update tracker
-		tracker.update(x, y, Gdx.input.getCurrentEventTime());
+		if (currentPtr.usedFor == PAN_FLING) {
+			currentPtr.tracker.update(x, y, Gdx.input.getCurrentEventTime());
 
-		// check if we are still tapping.
-		if (inTapSquare && !isWithinTapSquare(x, y, tapSquareCenterX, tapSquareCenterY)) {
-			longPressTask.cancel();
-			inTapSquare = false;
-		}
+			// check if we are still tapping.
+			if (inTapSquare && !isWithinTapSquare(x, y, tapSquareCenterX, tapSquareCenterY)) {
+				longPressTask.cancel();
+				inTapSquare = false;
+			}
 
-		// if we have left the tap square, we are panning
-		if (!inTapSquare) {
-			panning = true;
-			return listener.pan(x, y, tracker.deltaX, tracker.deltaY);
+			// if we have left the tap square, we are panning
+			if (!inTapSquare) {
+				panning = true;
+				return listener.pan(x, y, currentPtr.tracker.deltaX, currentPtr.tracker.deltaY);
+			}
 		}
 
 		return false;
+	}
+
+	public void updatePointers(int pointer) {
+		pointers.remove(pointer);
+		long startTime = Gdx.input.getCurrentEventTime();
+		ptr firstPtr = null;
+		for (ptr Ptr : pointers.values()) {
+			if (firstPtr == null)
+				firstPtr = Ptr;
+			if (Ptr.usedFor == PINCH_ZOOM) {
+				if (pinch1 == null) {
+					// pinch2 -> pinch1
+					pinch1 = pinch2;
+					pinch2 = null;
+				}
+				pinch1.initialPosition = pinch1.lastPosition.cpy();
+				pinch1.tracker.start(pinch1.lastPosition.x, pinch1.lastPosition.y, startTime);
+				pinch1.usedFor = PAN_FLING;
+				gestureStartTime = startTime;
+				panning = false;
+				inTapSquare = false;
+				if (!longPressFired && !longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
+			}
+			else if (Ptr.usedFor == NOT_USED) {
+				if (Ptr == firstPtr) {
+					// New first pointer
+					pinch1 = null;
+					pinch2 = null;
+					Ptr.initialPosition = Ptr.lastPosition.cpy();
+					Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
+					Ptr.usedFor = PAN_FLING;
+					gestureStartTime = startTime;
+					panning = false;
+					inTapSquare = false;
+					if (!longPressFired && !longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
+				}
+				else {
+					// New pair for pinch/zoom
+					pinch1 = firstPtr;
+					pinch1.initialPosition = pinch1.lastPosition.cpy();
+					pinch1.usedFor = PINCH_ZOOM;
+					Ptr.initialPosition = Ptr.lastPosition.cpy();
+					Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
+					Ptr.usedFor = PINCH_ZOOM;
+					pinch2 = Ptr;
+					gestureStartTime = 0;
+					inTapSquare = false;
+					longPressTask.cancel();
+				}
+			}
+		}
 	}
 
 	@Override
@@ -170,57 +234,61 @@ public class GestureDetector extends InputAdapter {
 	}
 
 	public boolean touchUp (float x, float y, int pointer, int button) {
-		if (pointer > 1) return false;
+		if (!pointers.containsKey(pointer)) return false;
+		ptr currentPtr = pointers.get(pointer); 
+		currentPtr.lastPosition.set(x, y);
+
+		longPressTask.cancel();
+		if (longPressFired) {
+			updatePointers(pointer);
+			return false;
+		}
 
 		// check if we are still tapping.
-		if (inTapSquare && !isWithinTapSquare(x, y, tapSquareCenterX, tapSquareCenterY)) inTapSquare = false;
+		if (inTapSquare && !isWithinTapSquare(x, y, tapSquareCenterX, tapSquareCenterY))
+			inTapSquare = false;
 
 		boolean wasPanning = panning;
 		panning = false;
 
-		longPressTask.cancel();
-		if (longPressFired) return false;
-
 		if (inTapSquare) {
 			// handle taps
 			if (lastTapButton != button || lastTapPointer != pointer || TimeUtils.nanoTime() - lastTapTime > tapCountInterval
-				|| !isWithinTapSquare(x, y, lastTapX, lastTapY)) tapCount = 0;
+					|| !isWithinTapSquare(x, y, lastTapX, lastTapY))
+				tapCount = 0;
 			tapCount++;
 			lastTapTime = TimeUtils.nanoTime();
 			lastTapX = x;
 			lastTapY = y;
 			lastTapButton = button;
 			lastTapPointer = pointer;
-			gestureStartTime = 0;
+			updatePointers(pointer);
 			return listener.tap(x, y, tapCount, button);
 		}
 
-		if (pinching) {
+		if (currentPtr.usedFor == PINCH_ZOOM) {
 			// handle pinch end
-			pinching = false;
 			panning = true;
-			// we are in pan mode again, reset velocity tracker
-			if (pointer == 0) {
-				// first pointer has lifted off, set up panning to use the second pointer...
-				tracker.start(pointer2.x, pointer2.y, Gdx.input.getCurrentEventTime());
-			} else {
-				// second pointer has lifted off, set up panning to use the first pointer...
-				tracker.start(pointer1.x, pointer1.y, Gdx.input.getCurrentEventTime());
-			}
+			if (currentPtr == pinch1)
+				pinch1 = null;
+			else
+				pinch2 = null;
+			updatePointers(pointer);
 			return false;
 		}
 
 		// handle no longer panning
 		boolean handled = false;
-		if (wasPanning && !panning) handled = listener.panStop(x, y, pointer, button);
+		if (wasPanning && !panning)
+			handled = listener.panStop(x, y, pointer, button);
 
 		// handle fling
-		gestureStartTime = 0;
 		long time = Gdx.input.getCurrentEventTime();
-		if (time - tracker.lastTime < maxFlingDelay) {
-			tracker.update(x, y, time);
-			handled = listener.fling(tracker.getVelocityX(), tracker.getVelocityY(), button) || handled;
+		if (time - gestureStartTime > maxFlingDelay) {
+			currentPtr.tracker.update(x, y, time);
+			handled = listener.fling(currentPtr.tracker.getVelocityX(), currentPtr.tracker.getVelocityY(), button) || handled;
 		}
+		updatePointers(pointer);
 		return handled;
 	}
 
@@ -323,7 +391,7 @@ public class GestureDetector extends InputAdapter {
 		public boolean pinch (Vector2 initialPointer1, Vector2 initialPointer2, Vector2 pointer1, Vector2 pointer2);
 	}
 
-	/** Derrive from this if you only want to implement a subset of {@link GestureListener}.
+	/** Derive from this if you only want to implement a subset of {@link GestureListener}.
 	 * @author mzechner */
 	public static class GestureAdapter implements GestureListener {
 		@Override
@@ -437,16 +505,6 @@ public class GestureDetector extends InputAdapter {
 			}
 			if (numSamples == 0) return 0;
 			return sum / numSamples;
-		}
-
-		private float getSum (float[] values, int numSamples) {
-			numSamples = Math.min(sampleSize, numSamples);
-			float sum = 0;
-			for (int i = 0; i < numSamples; i++) {
-				sum += values[i];
-			}
-			if (numSamples == 0) return 0;
-			return sum;
 		}
 	}
 }
