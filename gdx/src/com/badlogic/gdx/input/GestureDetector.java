@@ -177,52 +177,55 @@ public class GestureDetector extends InputAdapter {
 		return false;
 	}
 
-	public void updatePointers(int pointer) {
+	private void updatePointers(int pointer) {
 		pointers.remove(pointer);
-		long startTime = Gdx.input.getCurrentEventTime();
-		ptr firstPtr = null;
-		for (ptr Ptr : pointers.values()) {
-			if (firstPtr == null)
-				firstPtr = Ptr;
-			if (Ptr.usedFor == PINCH_ZOOM) {
-				if (pinch1 == null) {
-					// pinch2 -> pinch1
-					pinch1 = pinch2;
-					pinch2 = null;
-				}
-				pinch1.initialPosition = pinch1.lastPosition.cpy();
-				pinch1.tracker.start(pinch1.lastPosition.x, pinch1.lastPosition.y, startTime);
-				pinch1.usedFor = PAN_FLING;
-				gestureStartTime = startTime;
-				panning = false;
-				inTapSquare = false;
-				if (!longPressFired && !longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
-			}
-			else if (Ptr.usedFor == NOT_USED) {
-				if (Ptr == firstPtr) {
-					// New first pointer
-					pinch1 = null;
-					pinch2 = null;
-					Ptr.initialPosition = Ptr.lastPosition.cpy();
-					Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
-					Ptr.usedFor = PAN_FLING;
+		if (pinch1 == null || pinch2 == null) {
+			long startTime = Gdx.input.getCurrentEventTime();
+			ptr firstPtr = null;
+			for (ptr Ptr : pointers.values()) {
+				if (firstPtr == null)
+					firstPtr = Ptr;
+				if (Ptr.usedFor == PINCH_ZOOM) {
+					if (pinch1 == null) {
+						// pinch2 -> pinch1
+						pinch1 = pinch2;
+						pinch2 = null;
+					}
+					pinch1.initialPosition = pinch1.lastPosition.cpy();
+					pinch1.tracker.start(pinch1.lastPosition.x, pinch1.lastPosition.y, startTime);
+					pinch1.usedFor = PAN_FLING;
 					gestureStartTime = startTime;
 					panning = false;
 					inTapSquare = false;
 					if (!longPressFired && !longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
 				}
-				else {
-					// New pair for pinch/zoom
-					pinch1 = firstPtr;
-					pinch1.initialPosition = pinch1.lastPosition.cpy();
-					pinch1.usedFor = PINCH_ZOOM;
-					Ptr.initialPosition = Ptr.lastPosition.cpy();
-					Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
-					Ptr.usedFor = PINCH_ZOOM;
-					pinch2 = Ptr;
-					gestureStartTime = 0;
-					inTapSquare = false;
-					longPressTask.cancel();
+				else if (Ptr.usedFor == NOT_USED) {
+					if (Ptr == firstPtr) {
+						// New first pointer
+						pinch1 = null;
+						pinch2 = null;
+						Ptr.initialPosition = Ptr.lastPosition.cpy();
+						Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
+						Ptr.usedFor = PAN_FLING;
+						gestureStartTime = startTime;
+						panning = false;
+						inTapSquare = false;
+						if (!longPressFired && !longPressTask.isScheduled()) Timer.schedule(longPressTask, longPressSeconds);
+					}
+					else {
+						// New pair for pinch/zoom
+						pinch1 = firstPtr;
+						pinch1.initialPosition = pinch1.lastPosition.cpy();
+						pinch1.usedFor = PINCH_ZOOM;
+						Ptr.initialPosition = Ptr.lastPosition.cpy();
+						Ptr.tracker.start(Ptr.lastPosition.x, Ptr.lastPosition.y, startTime);
+						Ptr.usedFor = PINCH_ZOOM;
+						pinch2 = Ptr;
+						gestureStartTime = 0;
+						inTapSquare = false;
+						longPressTask.cancel();
+						break;
+					}
 				}
 			}
 		}
@@ -234,9 +237,15 @@ public class GestureDetector extends InputAdapter {
 	}
 
 	public boolean touchUp (float x, float y, int pointer, int button) {
+
 		if (!pointers.containsKey(pointer)) return false;
 		ptr currentPtr = pointers.get(pointer); 
 		currentPtr.lastPosition.set(x, y);
+
+		if (currentPtr.usedFor == NOT_USED) {
+			updatePointers(pointer);
+			return false;
+		}
 
 		longPressTask.cancel();
 		if (longPressFired) {
